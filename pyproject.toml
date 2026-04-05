@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "litpubmed"
+version = "0.1.0"
+description = "PubMed research CLI/API: E-utilities esearch + edirect efetch + Qwen-compatible LLM"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.40.0",
+    "uvicorn[standard]>=0.30.0",
+    "fastapi>=0.115.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.6.0"]
+
+[project.scripts]
+litpubmed = "litpubmed.cli:main"
+litpubmed-api = "litpubmed.api_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["litpubmed"]
