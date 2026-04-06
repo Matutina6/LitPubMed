@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "PubMed research CLI/API: E-utilities esearch + edirect efetch + Qwen-compatible LLM"
 requires-python = ">=3.10"
 dependencies = [
+    "wcwidth>=0.2.13",
     "openai>=1.40.0",
     "uvicorn[standard]>=0.30.0",
     "fastapi>=0.115.0",

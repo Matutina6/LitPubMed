@@ -5,8 +5,10 @@ import shlex
 import sys
 from typing import List
 
+from litpubmed.banner import print_startup_banner
 from litpubmed.config import Settings
 from litpubmed.service import LitPubMedService
+from litpubmed.term_links import format_pubmed_hit_line, format_pubmed_tab_line, format_pubmed_url_line
 
 
 def _resolve_query_with_optional_llm(svc: LitPubMedService, q_in: str, *, what: str) -> str:
@@ -14,6 +16,8 @@ def _resolve_query_with_optional_llm(svc: LitPubMedService, q_in: str, *, what: 
     q = q_in
     if svc.llm.configured:
         try:
+            to = int(svc.settings.llm_http_timeout_seconds())
+            print(f"正在请求 LLM 解析为 PubMed 检索式（最长等待约 {to} 秒）…", flush=True)
             q = svc.llm.pubmed_query_from_natural_language(q_in)
         except Exception as e:
             print(f"LLM 解析失败: {e}")
@@ -48,7 +52,11 @@ def _cmd_help() -> None:
   /mode normal|synthesis 切换模式
   /depth abstract|title_only  传给模型的正文深度
   /config show | set model <m> | set base <url> | save
+  （LLM 超时见环境变量 LITPUBMED_LLM_TIMEOUT，默认 120 秒）
   /quit 或 /exit        退出
+
+/find、/findraw 命中行在支持 OSC 8 的终端里可点击跳转 PubMed；否则显示可复制 URL。
+环境变量 LITPUBMED_NO_HYPERLINK=1 或 NO_HYPERLINK=1 可关闭可点击链接。
 
 综合模式 (synthesis) 下直接输入问题，将基于 /select 的文献调用 LLM。
 默认模型: qwen-max（百炼 DashScope OpenAI 兼容）；可用环境变量 LITPUBMED_LLM_MODEL
@@ -62,6 +70,8 @@ def run_repl(svc: LitPubMedService) -> None:
         import readline  # noqa: F401
     except ImportError:
         pass
+
+    print_startup_banner()
 
     s = svc.settings
     print(
@@ -100,9 +110,8 @@ def run_repl(svc: LitPubMedService) -> None:
                     print("所选 id 无效。")
                     continue
                 try:
-                    for piece in svc.llm.synthesize_stream(line, papers, depth=depth):
-                        print(piece, end="", flush=True)
-                    print()
+                    # 整段生成后再解析 TABLE_JSON，才能用 wcwidth 重绘多列表格
+                    print(svc.llm.synthesize(line, papers, depth=depth))
                 except Exception as e:
                     print(f"LLM 错误: {e}")
                 continue
@@ -121,7 +130,13 @@ def run_repl(svc: LitPubMedService) -> None:
                 print(f"PubMed 检索式: {q}")
                 hits = svc.search_remote(q, max_results=15)
                 for h in hits:
-                    print(f"  PMID {h.get('pmid')} — {h.get('title', '')[:100]}")
+                    print(
+                        format_pubmed_hit_line(
+                            str(h.get("pmid", "")),
+                            str(h.get("title", "")),
+                            title_max=100,
+                        )
+                    )
                 if not hits:
                     print("无结果。")
             elif cmd == "/findraw":
@@ -132,7 +147,13 @@ def run_repl(svc: LitPubMedService) -> None:
                 print(f"PubMed 检索式: {q}")
                 hits = svc.search_remote(q, max_results=15)
                 for h in hits:
-                    print(f"  PMID {h.get('pmid')} — {h.get('title', '')[:100]}")
+                    print(
+                        format_pubmed_hit_line(
+                            str(h.get("pmid", "")),
+                            str(h.get("title", "")),
+                            title_max=100,
+                        )
+                    )
                 if not hits:
                     print("无结果。")
             elif cmd == "/import":
@@ -251,6 +272,9 @@ def run_repl(svc: LitPubMedService) -> None:
                 d = r.as_dict()
                 for k in ("id", "pmid", "title", "authors", "year", "topic", "tags", "notes"):
                     print(f"{k}: {d.get(k)}")
+                uline = format_pubmed_url_line(str(d.get("pmid", "")))
+                if uline:
+                    print(uline)
                 print("abstract:\n", d.get("abstract", ""))
             elif cmd == "/note":
                 if len(args) < 2 or not args[0].isdigit():
@@ -310,6 +334,11 @@ def run_repl(svc: LitPubMedService) -> None:
                     svc.settings.load_json_overrides()
                     print("model:", svc.settings.llm_model)
                     print("base:", svc.settings.llm_api_base)
+                    print(
+                        "llm_timeout_s:",
+                        svc.settings.llm_http_timeout_seconds(),
+                        "(LITPUBMED_LLM_TIMEOUT)",
+                    )
                     print("api_key:", "[SET]" if svc.settings.llm_api_key else "[NOT SET]")
                 elif args[0] == "set" and len(args) >= 3:
                     if args[1] == "model":
@@ -371,7 +400,22 @@ def main() -> None:
             q = args.find_raw
             print(f"PubMed 检索式: {q}")
             for h in svc.search_remote(q, max_results=args.max):
-                print(f"PMID {h.get('pmid')}\t{h.get('title', '')}")
+                if sys.stdout.isatty():
+                    print(
+                        format_pubmed_hit_line(
+                            str(h.get("pmid", "")),
+                            str(h.get("title", "")),
+                            title_max=500,
+                            indent="",
+                        )
+                    )
+                else:
+                    print(
+                        format_pubmed_tab_line(
+                            str(h.get("pmid", "")),
+                            str(h.get("title", "")),
+                        )
+                    )
             return
         if args.find:
             q_in = args.find
@@ -384,7 +428,22 @@ def main() -> None:
                     print("已按原文检索。", file=sys.stderr)
             print(f"PubMed 检索式: {q}")
             for h in svc.search_remote(q, max_results=args.max):
-                print(f"PMID {h.get('pmid')}\t{h.get('title', '')}")
+                if sys.stdout.isatty():
+                    print(
+                        format_pubmed_hit_line(
+                            str(h.get("pmid", "")),
+                            str(h.get("title", "")),
+                            title_max=500,
+                            indent="",
+                        )
+                    )
+                else:
+                    print(
+                        format_pubmed_tab_line(
+                            str(h.get("pmid", "")),
+                            str(h.get("title", "")),
+                        )
+                    )
             return
         if args.import_query_raw:
             q = args.import_query_raw
